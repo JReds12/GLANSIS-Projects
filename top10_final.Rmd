@@ -1,0 +1,194 @@
+---
+title: "top10_final"
+author: "Joseph Redinger"
+date: "8/30/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### **Script Summary:** Fits and analyzes best GLMs for counts of Impact Factors calculated from GLANSIS organisms risk assessments. Hurdle model was initially considered best fit.  
+
+### **Paper:** The Great Lakes’ Most Unwanted: Characterizing the Impacts of the Top Great Lakes Aquatic Invasive Species - El Lower, Rochelle Sturtevant, Susannah Iott,Felix Martinez, Ed Rutherford, Doran M. Mason and Ashley K. Elgin  
+
+#### **Libraries**
+```{r, message = FALSE, warning = FALSE}
+library(knitr)
+library(dplyr)
+library(ggplot2) # plot figures
+library(MASS) # run glm with negative binomial distribution
+library(pscl) # run zero-inflation model
+library(boot) # bootstrapping confidence interval
+library(countreg) # plot model dispersion
+library(ggpubr) # arrange ggplots for figure
+library(ggpattern) # add pattern to black and white pie charts
+```
+
+
+#### **Upload data**
+
+##### This analysis looked only at the species nonindigenous to the Great Lakes basin which scored as ‘invasive’ for either environmental or socioeconomic impact using the original OIA process.  All species with IF of 0 & 1 were removed (impact factors range from 2-72).This effectively excludes all species classified as ‘no significant impact’ and ‘unknown’.
+
+
+```{r}
+dat = read.csv("glansis_species_impact_scores.csv", header = T)
+dat = dat[which(dat['status'] == 'established'),]
+dat = dat[which(dat['IF.score'] > 1),]
+
+species_remove = c('Aeromonas salmonicida', 'Cyclops strenuus', 'Ictiobus niger', 'Lupinus polyphyllus', 'Nasturtium officinale', 'Pylodictis olivaris', 'Radix auricularia', 'Rorippa sylvestris', 'Rumex longifolius', 'Schyzocotyle acheilognathi', 'Ulva (Enteromorpha) prolifera')
+
+dat <- dat[!(dat$scientific.name %in% species_remove), ]
+dat
+```
+
+```{r}
+sequence = paste(seq(2, 54, by = 2), "-", seq(3, 55, by = 2))
+
+breaks = seq(2, 56, by = 2)
+intervals = cut(dat$IF.score, breaks = breaks, include.lowest = TRUE, right = FALSE)
+frequency_table = table(intervals)
+
+color_labels = c(rep("black", 2), rep("grey", 7), rep("white", 18))
+#color_labels = c(rep("white", 2), rep("grey", 5), rep("black", 20))
+
+barplot_df = data.frame(categories = sequence, frequency = as.vector(frequency_table), color = color_labels)
+print(barplot_df)
+
+# Create order that is used in bar plot
+barplot_df$categories = factor(barplot_df$categories, levels = barplot_df$categories)
+
+# Bar plot
+inv_barplot = ggplot(barplot_df, aes(x = categories, y = frequency, fill = color)) +
+  geom_hline(yintercept = seq(0, 25, by = 1), color = "gray88", linetype = "solid") +
+  geom_hline(yintercept = seq(0, 25, by = 5), color = "gray40", linetype = "solid") +
+  geom_bar(stat = "identity", color = "black", width = 0.8, size = 0.75) +
+  xlab( 'Impact Factor') +
+  ylab('Number of Species') +
+  scale_fill_identity() +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(color = "gray", linetype = "solid"),
+        axis.text.x = element_text(size = 10, color = "black", face = "bold", angle = 270, hjust = -0.01, vjust = 0.3, margin = margin(t = -10)),
+        axis.text.y = element_text(size = 12, color = "black", face = "bold"),
+        axis.title.x = element_text(size = 16, face = "bold", margin = margin(t = 1, unit = "lines")),
+        axis.title.y = element_text(size = 16, face = "bold", margin = margin(r = 1, unit = "lines"))
+  )
+inv_barplot
+
+ggsave(inv_barplot, file = "impact.factor.barplot.jpg", width = 20, height = 12, units = c("cm"), dpi = 400)
+#ggsave(inv_barplot, file = "impact.factor.barplot.pdf", width = 20, height = 12, units = c("cm"), dpi = 400)
+```
+
+### Data Exploration
+``` {r, include = FALSE}
+# top10
+top10 = dat[1:10,]
+
+
+head(top10, 5)
+names(top10)
+dim(top10)
+str(top10)
+```
+
+```{r, include = FALSE}
+# all nonindigenous species
+all = dat[11:nrow(dat),]
+all
+
+head(all, 5)
+names(all)
+dim(all)
+str(all)
+```
+
+### Create tables - group by origin & taxa & vector
+```{r, include = FALSE}
+# Nonindigenous species
+all.org = as.data.frame(table(all$origin))
+#all.org = as.data.frame(table(all$continent.pub))
+
+all.org = all.org %>% 
+      rename("origin" = "Var1") %>%
+      rename("freq.all"="Freq")
+
+# Top 10 species
+top10.org = as.data.frame(table(top10$origin))
+
+top10.org = top10.org %>% 
+      rename("origin" = "Var1") %>%
+      rename("freq.top10" = "Freq")
+
+# Combine tables
+df.org = full_join(all.org, top10.org, by = join_by("origin" == "origin")) %>% 
+      replace(is.na(.), 0)
+
+```
+
+```{r, include = FALSE}
+# Nonindigenous species
+all.taxa= as.data.frame(table(all$taxa))
+#all.taxa = as.data.frame(table(all$taxon.pub))
+
+all.taxa = all.taxa %>% 
+      rename("taxa" = "Var1") %>%
+      rename("freq.all"="Freq") 
+
+# Top 10 species
+top10.taxa = as.data.frame(table(top10$taxa))
+#top10.taxa = as.data.frame(table(top10$taxon))
+
+top10.taxa = top10.taxa %>% 
+       rename("taxa" = "Var1") %>%
+       rename("freq.top10"="Freq")
+
+# Combine tables
+df.taxa = full_join(all.taxa, top10.taxa, by = join_by("taxa" == "taxa")) %>% 
+      replace(is.na(.), 0)
+
+```
+
+```{r, include = FALSE}
+# Nonindigenous species
+all.vector = as.data.frame(table(all$vector))
+
+all.vector = all.vector %>% 
+      rename("vector" = "Var1") %>%
+      rename("freq.all"="Freq") 
+
+# Top 10 species
+top10.vector = as.data.frame(table(top10$vector))
+
+top10.vector = top10.vector %>% 
+       rename("vector" = "Var1") %>%
+       rename("freq.top10"="Freq")
+
+# Combine tables
+df.vector = full_join(all.vector, top10.vector, by = join_by("vector" == "vector")) %>% 
+      replace(is.na(.), 0)
+
+```
+
+#### Continent of origin data
+```{r}
+df.org
+df.taxa
+df.vector
+```
+
+### Chi-square test of independence 
+```{r, warning = FALSE}
+# origin chi-square test
+print(chisq.test(df.org[2:3]))
+
+# taxa chi-square test
+print(chisq.test(df.taxa[2:3]))
+
+# taxa chi-square test
+print(chisq.test(df.vector[2:3]))
+
+```
